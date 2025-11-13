@@ -1,0 +1,52 @@
+import cv2
+
+# Open the webcam (0 = default camera)
+#camera = cv2.VideoCapture(0)
+ 
+#if not camera.isOpened():
+   # print("Error: Could not open webcam.")
+    #exit()
+ 
+# Read a frame from the webcam
+#ret, frame = camera.read()
+ 
+#if ret:
+    # Save the image to a file
+  #  cv2.imwrite("photo.jpg", frame)
+  #  print("✅ Photo saved as 'photo.jpg'")
+#else:
+ #   print("Error: Could not read frame.")
+ 
+# Release the camera
+#camera.release()
+
+# === Settings ===
+IMAGE_NAME = "photo2.jpg"   # <-- change if needed
+
+# === Load image ===
+image = cv2.imread(IMAGE_NAME)
+if image is None:
+    print("Error: Image not found!")
+    exit()
+
+# === Convert to HSV ===
+hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+
+# === Mouse callback function ===
+def show_hsv(event, x, y, flags, param):
+    if event == cv2.EVENT_MOUSEMOVE:
+        pixel = hsv[y, x]
+        h, s, v = pixel
+        print(f"X:{x}  Y:{y}  -->  H:{h}  S:{s}  V:{v}")
+
+# === Create window + enable callback ===
+cv2.namedWindow("HSV Inspector")
+cv2.setMouseCallback("HSV Inspector", show_hsv)
+
+# === Display until ESC is pressed ===
+while True:
+    cv2.imshow("HSV Inspector", image)
+    if cv2.waitKey(1) & 0xFF == 27:  # ESC key = quit
+        break
+
+cv2.destroyAllWindows()
