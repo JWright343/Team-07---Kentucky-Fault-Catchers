@@ -1,0 +1,147 @@
+import cv2
+import numpy as np
+
+# -------------------- Step 0: Capture image --------------------
+#camera = cv2.VideoCapture(0)
+#if not camera.isOpened():
+#    print("Error: Could not open webcam.")
+#    exit()
+#
+#ret, frame = camera.read()
+#camera.release()
+
+#if not ret:
+#    print("Error: Could not read frame.")
+#    exit()
+
+#cv2.imwrite("photo.jpg", frame)
+#print("✅ Photo saved as 'photo.jpg'")
+
+# -------------------- Step 1: Load image and mask pink --------------------
+image = cv2.imread("photo2.jpg")
+hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+
+# HSV bounds for pink device border
+lower_pink = np.array([60, 25, 160])
+upper_pink = np.array([75, 75, 255])
+mask_pink = cv2.inRange(hsv, lower_pink, upper_pink)
+
+# Noise reduction
+kernel = np.ones((5,5), np.uint8)
+mask_pink = cv2.morphologyEx(mask_pink, cv2.MORPH_OPEN, kernel)
+mask_pink = cv2.morphologyEx(mask_pink, cv2.MORPH_CLOSE, kernel)
+
+# -------------------- Step 2: Find device face contour --------------------
+contours, _ = cv2.findContours(mask_pink, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+# Filter by minimum area
+min_area = 500
+valid_contours = [c for c in contours if cv2.contourArea(c) > min_area]
+if not valid_contours:
+    raise Exception("No sufficiently large pink region found!")
+
+# Choose contour closest to image center
+img_center = np.array([image.shape[1]//2, image.shape[0]//2])
+def center_distance(contour):
+    M = cv2.moments(contour)
+    if M["m00"] == 0:
+        return float('inf')
+    cx = int(M["m10"]/M["m00"])
+    cy = int(M["m01"]/M["m00"])
+    return np.linalg.norm(np.array([cx, cy]) - img_center)
+
+device_contour = min(valid_contours, key=center_distance)
+x, y, w, h = cv2.boundingRect(device_contour)
+
+# Crop ROI
+x_end = min(x + w, image.shape[1])
+y_end = min(y + h, image.shape[0])
+roi_image = image[y:y_end, x:x_end]
+roi_hsv = hsv[y:y_end, x:x_end]
+
+# -------------------- Step 3: Mask white and red for ellipse fitting --------------------
+# White mask
+lower_white = np.array([0, 0, 200])
+upper_white = np.array([180, 45, 255])
+mask_white = cv2.inRange(roi_hsv, lower_white, upper_white)
+
+# Red mask
+lower_red1 = np.array([0, 120, 70])
+upper_red1 = np.array([10, 255, 255])
+lower_red2 = np.array([170, 120, 70])
+upper_red2 = np.array([180, 255, 255])
+
+mask_red1 = cv2.inRange(roi_hsv, lower_red1, upper_red1)
+mask_red2 = cv2.inRange(roi_hsv, lower_red2, upper_red2)
+mask_red_total = cv2.bitwise_or(mask_red1, mask_red2)
+
+# Combine white + red for ellipse fitting
+mask_for_ellipse = cv2.bitwise_or(mask_white, mask_red_total)
+
+# Clean small noise and fill small holes
+mask_for_ellipse = cv2.morphologyEx(mask_for_ellipse, cv2.MORPH_CLOSE, np.ones((5,5), np.uint8))
+
+# -------------------- Step 4: Fit ellipse --------------------
+contours, _ = cv2.findContours(mask_for_ellipse, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+if len(contours) == 0:
+    raise Exception("No region found for ellipse fitting!")
+
+# Take the largest contour
+contours = sorted(contours, key=cv2.contourArea, reverse=True)
+ellipse_contour = contours[0]
+
+if len(ellipse_contour) < 5:
+    raise Exception("Not enough points to fit ellipse!")
+
+ellipse = cv2.fitEllipse(ellipse_contour)
+
+# Adjust ellipse coordinates back to original image
+(cx, cy), (MA, ma), angle = ellipse
+cx += x
+cy += y
+ellipse_corrected = ((cx, cy), (MA, ma), angle)
+
+# Draw ellipse on original image
+debug = image.copy()
+cv2.ellipse(debug, ellipse_corrected, (0,255,0), 2)
+
+# -------------------- Step 5: Create ellipse mask --------------------
+ellipse_mask = np.zeros(image.shape[:2], dtype="uint8")
+cv2.ellipse(ellipse_mask, ellipse_corrected, 255, -1)
+
+# -------------------- Step 6: Detect red inside ellipse --------------------
+# Create full-size red mask for bitwise AND
+mask_red_full = np.zeros(image.shape[:2], dtype="uint8")
+mask_red_full[y:y_end, x:x_end] = mask_red_total  # put ROI red mask into full image
+
+# Bitwise AND with ellipse mask
+mask_red_inside = cv2.bitwise_and(mask_red_full, ellipse_mask)
+
+# Clean small red specks
+mask_red_inside = cv2.morphologyEx(mask_red_inside, cv2.MORPH_OPEN, np.ones((3,3), np.uint8))
+
+# -------------------- Step 7: Calculate red coverage --------------------
+total_pixels = np.count_nonzero(ellipse_mask)
+red_pixels = np.count_nonzero(mask_red_inside)
+percent_red = (red_pixels / total_pixels) * 100
+print(f"Red coverage inside ellipse: {percent_red:.2f}%")
+
+if percent_red > 40:
+    print("⚠️ ALERT: More than 40% red detected inside ellipse.")
+else:
+    print("✅ Less than 40% red detected inside ellipse.")
+
+# -------------------- Step 8: Visual debug --------------------
+overlay = image.copy()
+overlay[mask_red_inside>0] = [0,0,255]  # red overlay
+
+cv2.imshow("Original w/ Ellipse", debug)
+cv2.imshow("Ellipse Only (masked)", cv2.bitwise_and(image, image, mask=ellipse_mask))
+cv2.imshow("Ellipse Mask", ellipse_mask)
+cv2.imshow("Red Mask Inside Ellipse", mask_red_inside)
+cv2.imshow("Red Overlay", overlay)
+
+cv2.imwrite("BoundingBox.jpg", debug)
+
+cv2.waitKey(0)
+cv2.destroyAllWindows()
