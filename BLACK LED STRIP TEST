@@ -1,0 +1,40 @@
+import time
+import board
+import neopixel
+
+# LED strip configuration:
+LED_COUNT = 144            # Number of LEDs in your strip
+LED_PIN = board.D18        # GPIO pin connected to the pixels (18 = PWM)
+BRIGHTNESS = 0.5           # 0.0–1.0
+
+# Create NeoPixel object
+pixels = neopixel.NeoPixel(
+    LED_PIN,
+    LED_COUNT,
+    brightness=BRIGHTNESS,
+    auto_write=True,      # Writes immediately
+    pixel_order=neopixel.GRB
+)
+
+def turn_on(color=(255, 0, 0)):
+    """Turn on the entire strip to a single color."""
+    for i in range(LED_COUNT):
+        pixels[i] = color
+
+def turn_off():
+    """Turn off all LEDs."""
+    for i in range(LED_COUNT):
+        pixels[i] = (0, 0, 0)
+
+# Example usage:
+if __name__ == "__main__":
+    print("Turning strip red...")
+    turn_on((255, 0, 0))    # RED
+    time.sleep(2)
+
+    print("Turning strip green...")
+    turn_on((0, 255, 0))    # GREEN
+    time.sleep(2)
+
+    print("Turning strip off...")
+    turn_off()
