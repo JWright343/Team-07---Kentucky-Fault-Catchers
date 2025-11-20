@@ -1,0 +1,207 @@
+import cv2
+import numpy as np
+
+# ============================================================
+# Utility Functions
+# ============================================================
+
+def load_image(path):
+    img = cv2.imread(path)
+    if img is None:
+        raise FileNotFoundError(f"Could not load image '{path}'.")
+    return img
+
+def morphology_clean(mask, kernel_size=5, op=cv2.MORPH_CLOSE):
+    kernel = np.ones((kernel_size, kernel_size), np.uint8)
+    return cv2.morphologyEx(mask, op, kernel)
+
+# ============================================================
+# Step 0 — Capture and save photo
+# ============================================================
+
+def capture_photo(filename="photo.jpg"):
+    camera = cv2.VideoCapture(0)
+    if not camera.isOpened():
+        raise Exception("Could not open webcam.")
+    ret, frame = camera.read()
+    camera.release()
+    if not ret:
+        raise Exception("Failed to capture image.")
+    cv2.imwrite(filename, frame)
+    print(f"✅ Photo saved as '{filename}'")
+
+# ============================================================
+# Step 1 — Green Border Mask
+# ============================================================
+
+def mask_green(hsv):
+    lower = np.array([50, 90, 110])
+    upper = np.array([75, 255, 255])
+    mask = cv2.inRange(hsv, lower, upper)
+    mask = morphology_clean(mask, 5, cv2.MORPH_OPEN)
+    return morphology_clean(mask, 5, cv2.MORPH_CLOSE)
+
+# ============================================================
+# Step 2 — Extract ROTATED ROI around device
+# ============================================================
+
+def extract_rotated_roi(image, green_mask):
+    contours, _ = cv2.findContours(green_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    valid = [c for c in contours if cv2.contourArea(c) > 500]
+    if not valid:
+        raise Exception("No sufficiently large green region found!")
+
+    img_center = np.array([image.shape[1] // 2, image.shape[0] // 2])
+    def center_distance(c):
+        M = cv2.moments(c)
+        if M["m00"] == 0:
+            return float("inf")
+        cx = int(M["m10"]/M["m00"])
+        cy = int(M["m01"]/M["m00"])
+        return np.linalg.norm(np.array([cx, cy]) - img_center)
+
+    device_contour = min(valid, key=center_distance)
+
+    # Get minimum area rotated rectangle
+    rect = cv2.minAreaRect(device_contour)  # ((cx, cy), (w, h), angle)
+    box = cv2.boxPoints(rect)
+    box = box.astype(np.int32)  # ✅ correct
+
+
+    # Width and height of rotated rectangle
+    W = int(rect[1][0])
+    H = int(rect[1][1])
+    angle = rect[2]
+
+    # Rotation matrix
+    center = rect[0]
+    rotation_matrix = cv2.getRotationMatrix2D(center, angle, 1.0)
+    rotated_image = cv2.warpAffine(image, rotation_matrix, (image.shape[1], image.shape[0]))
+
+    # Crop the rotated rectangle
+    x, y = int(center[0] - W/2), int(center[1] - H/2)
+    roi = rotated_image[y:y+H, x:x+W]
+
+    # Show rotated ROI for debugging
+    cv2.imshow("Rotated ROI", roi)
+    cv2.waitKey(1)
+
+    return roi, rect, rotated_image
+
+# ============================================================
+# Step 3 — Mask white + red in the ROI
+# ============================================================
+
+def mask_white_and_red(hsv_roi):
+    lower_white = np.array([0, 0, 120])
+    upper_white = np.array([180, 45, 255])
+    mask_white = cv2.inRange(hsv_roi, lower_white, upper_white)
+
+    lower_red1 = np.array([0, 120, 70])
+    upper_red1 = np.array([10, 255, 255])
+    lower_red2 = np.array([170, 120, 70])
+    upper_red2 = np.array([180, 255, 255])
+    mask_red = cv2.bitwise_or(
+        cv2.inRange(hsv_roi, lower_red1, upper_red1),
+        cv2.inRange(hsv_roi, lower_red2, upper_red2)
+    )
+
+    combined = cv2.bitwise_or(mask_white, mask_red)
+    combined = morphology_clean(combined, 5, cv2.MORPH_CLOSE)
+    return combined
+
+# ============================================================
+# Step 4 — Fit ellipse inside ROI mask
+# ============================================================
+
+def fit_ellipse(mask):
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        raise Exception("No region found for ellipse fitting!")
+    contour = max(contours, key=cv2.contourArea)
+    if len(contour) < 5:
+        raise Exception("Not enough points to fit ellipse!")
+    return cv2.fitEllipse(contour)
+
+# ============================================================
+# Step 6 — Detect red inside ellipse
+# ============================================================
+
+def detect_red_inside(mask_red, ellipse_mask):
+    inside = cv2.bitwise_and(mask_red, ellipse_mask)
+    return morphology_clean(inside, 3, cv2.MORPH_OPEN)
+
+# ============================================================
+# Step 7 — Compute red percentage
+# ============================================================
+
+def compute_red_percentage(red_mask, ellipse_mask):
+    total = np.count_nonzero(ellipse_mask)
+    red = np.count_nonzero(red_mask)
+    if total == 0:
+        return 0.0
+    return (red / total) * 100
+
+# ============================================================
+# Main pipeline
+# ============================================================
+
+def main():
+    # Step 0
+    capture_photo("photo.jpg")
+    image = load_image("photo.jpg")
+    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+
+    # Step 1
+    green_mask = mask_green(hsv)
+
+    # Step 2 — rotated ROI
+    roi, rect, rotated_image = extract_rotated_roi(image, green_mask)
+    hsv_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+
+    # Step 3
+    mask_for_ellipse = mask_white_and_red(hsv_roi)
+
+    # Step 4
+    ellipse = fit_ellipse(mask_for_ellipse)
+
+    # Step 5 — ellipse mask (same size as ROI)
+    ellipse_mask = np.zeros(roi.shape[:2], dtype="uint8")
+    cv2.ellipse(ellipse_mask, ellipse, 255, -1)
+
+    # Step 6 — red mask inside ROI
+    lower_red1 = np.array([0, 120, 70])
+    upper_red1 = np.array([10, 255, 255])
+    lower_red2 = np.array([170, 120, 70])
+    upper_red2 = np.array([180, 255, 255])
+    mask_red = cv2.bitwise_or(
+        cv2.inRange(hsv_roi, lower_red1, upper_red1),
+        cv2.inRange(hsv_roi, lower_red2, upper_red2)
+    )
+
+    red_inside = detect_red_inside(mask_red, ellipse_mask)
+
+    # Step 7
+    percent_red = compute_red_percentage(red_inside, ellipse_mask)
+    print(f"Red coverage inside ellipse: {percent_red:.2f}%")
+    if percent_red > 40:
+        print("⚠️ ALERT: More than 40% red detected inside ellipse.")
+    else:
+        print("✅ Less than 40% red detected inside ellipse.")
+
+    # Debug display
+    debug = roi.copy()
+    cv2.ellipse(debug, ellipse, (0, 255, 0), 2)
+    overlay = roi.copy()
+    overlay[red_inside > 0] = [0, 0, 255]
+
+    cv2.imshow("Ellipse Mask", ellipse_mask)
+    cv2.imshow("Red Inside Ellipse", red_inside)
+    cv2.imshow("Overlay Red", overlay)
+    cv2.imshow("ROI Debug", debug)
+
+    cv2.waitKey(0)
+    cv2.destroyAllWindows()
+
+if __name__ == "__main__":
+    main()
