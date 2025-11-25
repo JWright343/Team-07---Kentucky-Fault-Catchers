@@ -93,7 +93,7 @@ def lighting_thread():
             effect_rainbow()
 
         elif mode == 3:
-            effect_chase()
+            effect_blue_pulse()
 
         else:
             time.sleep(0.1)
@@ -111,7 +111,7 @@ thread.start()
 # THIS IS WHERE THE MAIN FUNCTION WILL BE RUNNING INDEPENDENTLY OF THE INDICATION OPERATION
 # wiLL NEED TO ADD MODE UPDATES THROUGHOUT OTHER FUNCTIONS TO INDICATE ERRORS/STATUSES
 # -----------------------------
-if __name__ == "__main__":
+def main():
     try:
         print("Mode: OFF")
         time.sleep(2)
@@ -124,7 +124,7 @@ if __name__ == "__main__":
         mode = 2
         time.sleep(5)
 
-        print("Mode: Chase")
+        print("Mode: blue")
         mode = 3
         time.sleep(5)
 
@@ -137,3 +137,6 @@ if __name__ == "__main__":
         thread.join()
         pixels.fill((0, 0, 0))
         print("Stopped.")
+
+if __name__ == "__main__":
+    main()
