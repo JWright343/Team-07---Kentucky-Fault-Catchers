@@ -6,7 +6,7 @@ import neopixel
 # -----------------------------
 # LED SETUP
 # -----------------------------
-LED_COUNT = 15
+LED_COUNT = 12
 LED_PIN = board.D18
 BRIGHTNESS = 0.4
 
