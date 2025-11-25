@@ -1,0 +1,12 @@
+# adafruit blinka download script
+import subprocess
+import sys
+
+# List of required libraries
+packages = [
+    "adafruit-circuitpython-neopixel",
+    "adafruit-blinka"
+]
+
+for pkg in packages:
+    subprocess.check_call([sys.executable, "-m", "pip", "install", pkg])
