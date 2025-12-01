@@ -1,0 +1,23 @@
+import requests
+ 
+# --- CONFIG ---
+
+camera_ip = "169.254.245.19"        # change this
+
+snapshot_url = f"http://{camera_ip}/jpeg/vga.jpg"  # or /oneshotimage.jpg
+ 
+# --- REQUEST ---
+
+response = requests.get(snapshot_url, timeout=5)
+ 
+if response.status_code == 200:
+
+    with open("snapshot.jpg", "wb") as f:
+
+        f.write(response.content)
+
+    print("Saved snapshot.jpg")
+
+else:
+
+    print("Error:", response.status_code, response.text)
