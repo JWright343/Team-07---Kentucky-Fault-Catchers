@@ -2,7 +2,7 @@ import requests
  
 # --- CONFIG ---
 
-camera_ip = "169.254.245.19"        # change this
+camera_ip = "169.254.217.104"        # change this
 
 snapshot_url = f"http://{camera_ip}/jpeg/vga.jpg"  # or /oneshotimage.jpg
  
