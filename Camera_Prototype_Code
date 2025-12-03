@@ -1,12 +1,12 @@
 import requests
  
-# --- CONFIG ---
+# --- Configures Camera ---
 
-camera_ip = "169.254.217.104"        # change this
+camera_ip = "169.254.217.104"        #Set IP address
 
 snapshot_url = f"http://{camera_ip}/jpeg/vga.jpg"  # or /oneshotimage.jpg
  
-# --- REQUEST ---
+# --- Requests Snapshot of Feed ---
 
 response = requests.get(snapshot_url, timeout=5)
  
@@ -19,5 +19,5 @@ if response.status_code == 200:
     print("Saved snapshot.jpg")
 
 else:
-
+    #Error condition if immage cannot be captured
     print("Error:", response.status_code, response.text)
