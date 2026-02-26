@@ -1,0 +1,303 @@
+/************************************************************
+  TCS3200 + 74HC4067 Fault Flag Detection System
+  Arduino Uno
+************************************************************/
+// GLOSSY
+
+// ---------------- MUX PINS --------------------------
+#define MUX_S0 6
+#define MUX_S1 5
+#define MUX_S2 4
+#define MUX_S3 3
+#define MUX_OUT 2 // Pin 2 will allow interrupt timing for the sensors, non-blocking
+#define PMUX_EN A0 // Controls the enable pin on the power MUX to ensure stability
+// ---------------- SENSOR CONTROL PINS ----------------
+#define SENS_S0 7
+#define SENS_S1 8
+#define SENS_S2 9
+#define SENS_S3 10
+
+//----------------- LED PINS ----------------------------
+#define RED_LED 11
+#define GREEN_LED 12
+#define BLUE_LED 13
+
+// ---------------- GLOBAL VARIABLES ---------
+volatile unsigned int pulseCount = 0; // For sensor interrupt counting
+bool fciTrip = false;
+bool catchAll = false;
+int connectedSensors = 0; // Will hold the number of sensors connected
+// ---------------- CONSTANTS ----------------
+//Timing variables to allow the LED to operate simultaneously with
+//the sensors 
+unsigned long previousMillis = 0; // Set timer to 0
+const unsigned long INTERVAL = 500; // 0.5 second delay between LED states
+bool flashState = false;
+const unsigned long SENSOR_WARMUP_MS = 5; // Warmup time for sensor to power up
+
+// ---------------- SETUP ----------------
+void setup()
+{
+  Serial.begin(9600);
+
+  
+
+  pinMode(MUX_S0, OUTPUT);
+  pinMode(MUX_S1, OUTPUT);
+  pinMode(MUX_S2, OUTPUT);
+  pinMode(MUX_S3, OUTPUT);
+  pinMode(MUX_OUT, INPUT);
+  pinMode(PMUX_EN, OUTPUT);
+  digitalWrite(PMUX_EN, HIGH); //Start power MUX disabled
+  
+  //Rising edges on sensor reading increments pulseCount
+  attachInterrupt(digitalPinToInterrupt(MUX_OUT), pulseISR, RISING);
+
+  pinMode(SENS_S0, OUTPUT);
+  pinMode(SENS_S1, OUTPUT);
+  pinMode(SENS_S2, OUTPUT);
+  pinMode(SENS_S3, OUTPUT);
+
+  pinMode(RED_LED, OUTPUT);
+  pinMode(GREEN_LED, OUTPUT);
+  pinMode(BLUE_LED, OUTPUT);
+
+  // Sensor frequency scaling = 20% -- Should work better w/ Arduino
+  digitalWrite(SENS_S0, HIGH);
+  digitalWrite(SENS_S1, LOW);
+  
+  //Checks for connected sensors
+  connectedSensors = sensorSweep(); 
+  
+  Serial.println("System Initialized");
+  Serial.println("------------------");
+}
+
+//Function to help with the sensor interrupts
+void pulseISR(){
+  pulseCount++;
+}
+
+// ---------------- MUX CHANNEL SELECT ----------------
+void selectChannel(int ch)
+{
+  digitalWrite(MUX_S0, ch & 1);
+  digitalWrite(MUX_S1, (ch >> 1) & 1);
+  digitalWrite(MUX_S2, (ch >> 2) & 1);
+  digitalWrite(MUX_S3, (ch >> 3) & 1);
+  delayMicroseconds(200);
+}
+
+
+//-------------------POWER MUX CONTROL------------------
+void powerSensorOn(int ch)
+{
+  selectChannel(ch);
+  digitalWrite(PMUX_EN, LOW); // Enable power MUX
+  delayMicroseconds(50);
+}
+
+void powerSensorOff()
+{
+  digitalWrite(PMUX_EN, HIGH); //Disable power MUX
+}
+
+void waitForWarmup()
+{
+  unsigned long start = millis();
+
+  while (millis() - start < SENSOR_WARMUP_MS)
+  {
+    updateLED(fciTrip, catchAll); //Keep LED logic alive while warming up
+  }
+}
+
+// ---------------- READ PULSE ----------------
+unsigned int readFrequency(unsigned int sampleTimeMs)
+{
+  //Reset counter safely
+  noInterrupts(); //Turns off interrupt flag
+  pulseCount = 0;
+  interrupts(); // Turns interrupt flag back on
+  
+  unsigned long start = millis();
+  while(millis() - start < sampleTimeMs) {
+    // just wait, interrupts will count pulses
+  }
+
+  // Copy result safely
+  noInterrupts();
+  unsigned int count = pulseCount;
+  interrupts();
+
+  return count;
+}
+
+
+// ---------------- READ ONE SENSOR ----------------
+bool readSensor(int ch, int &R, int &B, int &G)
+{
+  // RED
+  digitalWrite(SENS_S2, LOW);
+  digitalWrite(SENS_S3, LOW);
+  delayMicroseconds(400); // Allow filter to settle
+  R = readFrequency(20);
+
+  // BLUE
+  digitalWrite(SENS_S2, LOW);
+  digitalWrite(SENS_S3, HIGH);
+  delayMicroseconds(400); 
+  B = readFrequency(20);
+
+  // Green: This, with the blue filter, should provide a more accurate red reading
+  digitalWrite(SENS_S2, HIGH);
+  digitalWrite(SENS_S3, HIGH);
+  delayMicroseconds(400); 
+  G = readFrequency(20);
+
+  // Health check
+  if(R == 0 && B == 0 && G == 0) return false;
+  
+  return true;
+}
+
+// ---------------- RED FLAG DETECTION ----------------
+bool isRedFlag(int R, int B, int G) //Normalize the red detection, should work for glossy surfaces
+{
+ // Step 1: Remove common (white/glare) component
+  int minRGB = min(R, min(G, B));
+
+  float rPrime = R - minRGB;
+  float gPrime = G - minRGB;
+  float bPrime = B - minRGB;
+
+  float chromaSum = rPrime + gPrime + bPrime;
+
+  if(chromaSum < 50)   // very low chroma = gray/white/black
+    return false;
+
+  // Step 2: Normalize remaining color
+  float rNorm = rPrime / chromaSum;
+  float gNorm = gPrime / chromaSum;
+  float bNorm = bPrime / chromaSum;
+
+  // Step 3: Red decision 
+    return (rNorm > 0.6 && gNorm < 0.25 && bNorm < 0.25);
+}
+
+// ----------------- LED Operation Code ---------------
+void updateLED(bool fciTrip, bool catchAll) {
+  unsigned long now = millis();
+
+  // PRIORITY 1: RED TRIP
+  if(fciTrip) {
+    if(now - previousMillis >= INTERVAL) {
+      previousMillis = now;
+      flashState = !flashState;
+      digitalWrite(RED_LED, flashState);
+    }
+
+    digitalWrite(GREEN_LED, LOW);
+    digitalWrite(BLUE_LED, LOW);
+    return;  // stop here — nothing overrides red
+  }
+
+  // PRIORITY 2: SENSOR MISMATCH
+  if(catchAll) {
+    if(now - previousMillis >= INTERVAL) {
+      previousMillis = now;
+      flashState = !flashState;
+
+      digitalWrite(RED_LED, flashState);
+      digitalWrite(GREEN_LED, flashState);  // flashing yellow
+    }
+
+    digitalWrite(BLUE_LED, LOW);
+    return;
+  }
+
+  // PRIORITY 3: NORMAL
+  digitalWrite(RED_LED, LOW);
+  digitalWrite(GREEN_LED, LOW);
+  digitalWrite(BLUE_LED, HIGH);
+}
+
+// Do initial sweep of sensors and have a count of how many active channels are used initially
+int sensorSweep(){
+
+  int sensCount = 0;
+    for(int ch = 0; ch < 16; ch++){
+      int R, B, G;
+
+      if(readSensor(ch, R, B, G))
+      {
+      sensCount++;      
+      }
+    }
+    return sensCount;
+}
+
+// ---------------- MAIN LOOP ----------------
+void loop()
+{
+   int activeSensors = 0;
+    for(int ch = 0; ch < 16; ch++)
+    {
+    int R, B, G;
+
+    powerSensorOn(ch); //Turn on only this sensor
+    waitForWarmup();   //Allow sensor to stabilize
+
+    //Now read sensor    
+    if(!readSensor(ch, R, B, G))
+    {
+      Serial.print("Sensor ");
+      Serial.print(ch);
+      Serial.println(": DISCONNECTED / FAULT");
+      powerSensorOff();
+      continue;
+    }
+
+    activeSensors++; //Count only confirmed sensors
+
+    Serial.print("Sensor ");
+    Serial.print(ch);
+    Serial.print("  R=");
+    Serial.print(R);
+    Serial.print(" B=");
+    Serial.print(B);
+    Serial.print(" G=");
+    Serial.print(G);
+    Serial.print("  --> ");
+
+    if(isRedFlag(R, B, G)){
+      fciTrip = true;
+      Serial.println("FAULT FLAG");
+
+      // Latch here until cleared
+      while(true)
+      {
+        waitForWarmup();
+        readSensor(ch, R, B, G);
+        updateLED(true, catchAll);
+        
+        if (!isRedFlag(R, B, G)){
+          fciTrip = false;
+          break;
+        }      
+      }
+    } 
+    else
+    {
+      Serial.println("NORMAL");
+    }
+    powerSensorOff();
+  }
+  
+  catchAll = (activeSensors != connectedSensors);
+    
+  updateLED(fciTrip, catchAll);
+  Serial.println("------------------");
+  delay(5);
+
+}
