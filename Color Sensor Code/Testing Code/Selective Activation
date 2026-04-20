@@ -1,0 +1,93 @@
+// ===== Pin Definitions =====
+
+// Address pins (shared between both MUXes)
+const int S0 = 6;
+const int S1 = 5;
+const int S2 = 4;
+const int S3 = 3;
+
+// Enable pins (ACTIVE LOW)
+const int EN1 = A0;   // MUX driving XC8101 EN
+const int EN2 = 7;   // MUX returning measurement node
+
+bool running = true;
+
+void setup() {
+  pinMode(S0, OUTPUT);
+  pinMode(S1, OUTPUT);
+  pinMode(S2, OUTPUT);
+  pinMode(S3, OUTPUT);
+  pinMode(EN1, OUTPUT);
+  pinMode(EN2, OUTPUT);
+
+  disableAll();
+
+  Serial.begin(9600);
+  Serial.println("=== MUX Serial Selector ===");
+  Serial.println("Enter 0-15 to select channel");
+  Serial.println("'d' = disable");
+  Serial.println("'x' = exit");
+}
+
+void loop() {
+
+  if (!running) return;
+
+  if (Serial.available()) {
+
+    String input = Serial.readStringUntil('\n');
+    input.trim();
+
+    // Exit
+    if (input == "x") {
+      disableAll();
+      running = false;
+      Serial.println("Exited. MUX disabled.");
+      return;
+    }
+
+    // Disable only
+    if (input == "d") {
+      disableAll();
+      Serial.println("MUX disabled.");
+      return;
+    }
+
+    // Channel selection
+    int channel = input.toInt();
+
+    if (channel >= 0 && channel <= 15) {
+      selectChannel(channel);
+      Serial.print("Channel selected: ");
+      Serial.println(channel);
+    } else {
+      Serial.println("Invalid input. Enter 0-15.");
+    }
+  }
+}
+
+// ===== Core Functions =====
+
+void selectChannel(int channel) {
+
+  disableAll();   // Prevent glitch while switching
+
+  digitalWrite(S0, bitRead(channel, 0));
+  digitalWrite(S1, bitRead(channel, 1));
+  digitalWrite(S2, bitRead(channel, 2));
+  digitalWrite(S3, bitRead(channel, 3));
+
+  delayMicroseconds(5);  // Address settle time
+
+  enableAll();    // Enable signal path
+}
+
+void enableAll() {
+  digitalWrite(EN1, LOW);   // Active LOW
+  digitalWrite(EN2, LOW);
+}
+
+void disableAll() {
+  digitalWrite(EN1, HIGH);
+  digitalWrite(EN2, HIGH);
+}
