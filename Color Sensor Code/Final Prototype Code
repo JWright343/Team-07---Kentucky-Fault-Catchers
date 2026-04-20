@@ -1,0 +1,320 @@
+/************************************************************
+  TCS3200 + 74HC4067 Fault Flag Detection System
+  Arduino Uno
+ 
+  MODIFIED VERSION:
+  - Keeps the accessory logic from code #2:
+      * mux selection
+      * power mux control
+      * sensor sweep / connected sensor count
+      * LED status logic
+      * latched trip behavior
+      * catch-all mismatch detection
+  - Replaces RGB color detection with the simple light/frequency
+      * CLEAR filter only
+      * one frequency reading per sensor
+      * compare against TRIP_MIN / TRIP_MAX
+************************************************************/
+ 
+// ---------------- MUX PINS --------------------------
+#define MUX_S0 6
+#define MUX_S1 5
+#define MUX_S2 4
+#define MUX_S3 3
+#define MUX_OUT 2       // interrupt-capable pin for sensor output
+#define PMUX_EN A0      // power mux enable
+ 
+// ---------------- SENSOR CONTROL PINS ----------------
+#define SENS_S0 7
+#define SENS_S1 8
+#define SENS_S2 9
+#define SENS_S3 10
+ 
+// ---------------- LED PINS --------------------------
+#define RED_LED   11
+#define GREEN_LED 12
+#define BLUE_LED  13
+ 
+// ---------------- GLOBAL VARIABLES ------------------
+volatile unsigned int pulseCount = 0;
+ 
+bool fciTrip = false;
+bool catchAll = false;
+int connectedSensors = 0;
+ 
+// ---------------- TIMING CONSTANTS ------------------
+unsigned long previousMillis = 0;
+const unsigned long INTERVAL = 500;         // LED flash interval
+bool flashState = false;
+const unsigned long SENSOR_WARMUP_MS = 500; // sensor warmup time
+ 
+// ---------------- TRIP DETECTION --------------------
+// Based on your simple code #1
+const int TRIP_CENTER = 3800;   // tune as needed for your hardware //old = 4800
+const float TOLERANCE = 0.05;
+ 
+const int TRIP_MIN = TRIP_CENTER * (1.0 - TOLERANCE);
+const int TRIP_MAX = TRIP_CENTER * (1.0 + TOLERANCE);
+ 
+// ---------------- INTERRUPT SERVICE ROUTINE ---------
+void pulseISR()
+{
+  pulseCount++;
+}
+ 
+// ---------------- SETUP -----------------------------
+void setup()
+{
+  Serial.begin(9600);
+ 
+  pinMode(MUX_S0, OUTPUT);
+  pinMode(MUX_S1, OUTPUT);
+  pinMode(MUX_S2, OUTPUT);
+  pinMode(MUX_S3, OUTPUT);
+  pinMode(MUX_OUT, INPUT);
+  pinMode(PMUX_EN, OUTPUT);
+ 
+  pinMode(SENS_S0, OUTPUT);
+  pinMode(SENS_S1, OUTPUT);
+  pinMode(SENS_S2, OUTPUT);
+  pinMode(SENS_S3, OUTPUT);
+ 
+  pinMode(RED_LED, OUTPUT);
+  pinMode(GREEN_LED, OUTPUT);
+  pinMode(BLUE_LED, OUTPUT);
+ 
+  // Disable power mux initially
+  digitalWrite(PMUX_EN, HIGH);
+ 
+  // TCS3200 frequency scaling = 20%
+  digitalWrite(SENS_S0, HIGH);
+  digitalWrite(SENS_S1, LOW);
+ 
+  // Use CLEAR filter only, same concept as code #1
+  digitalWrite(SENS_S2, HIGH);
+  digitalWrite(SENS_S3, LOW);
+ 
+  // Interrupt counts rising edges from the selected sensor
+  attachInterrupt(digitalPinToInterrupt(MUX_OUT), pulseISR, RISING);
+ 
+  // Initial sweep to count connected sensors
+  connectedSensors = sensorSweep();
+ 
+  Serial.println("System Initialized");
+  Serial.println("------------------");
+}
+ 
+// ---------------- MUX CHANNEL SELECT ----------------
+void selectChannel(int ch)
+{
+  digitalWrite(MUX_S0, ch & 1);
+  digitalWrite(MUX_S1, (ch >> 1) & 1);
+  digitalWrite(MUX_S2, (ch >> 2) & 1);
+  digitalWrite(MUX_S3, (ch >> 3) & 1);
+  delayMicroseconds(200);
+}
+ 
+// ---------------- POWER MUX CONTROL -----------------
+void powerSensorOn(int ch)
+{
+  selectChannel(ch);
+  digitalWrite(PMUX_EN, LOW);   // enable power mux
+  delay(5);
+}
+ 
+void powerSensorOff()
+{
+  digitalWrite(PMUX_EN, HIGH);  // disable power mux
+}
+ 
+// ---------------- SENSOR WARMUP ---------------------
+void waitForWarmup()
+{
+  unsigned long start = millis();
+ 
+  while (millis() - start < SENSOR_WARMUP_MS)
+  {
+    updateLED(fciTrip, catchAll);  // keep LED logic alive
+  }
+}
+ 
+// ---------------- READ FREQUENCY --------------------
+unsigned int readFrequency(unsigned int sampleTimeMs)
+{
+  noInterrupts();
+  pulseCount = 0;
+  interrupts();
+ 
+  unsigned long start = millis();
+ 
+  while (millis() - start < sampleTimeMs)
+  {
+    // pulses counted by interrupt
+  }
+ 
+  noInterrupts();
+  unsigned int count = pulseCount;
+  interrupts();
+ 
+  return count;
+}
+ 
+// ---------------- READ ONE SENSOR -------------------
+// Returns false if the sensor appears disconnected / dead
+bool readSensorFrequency(int ch, unsigned int &freq)
+{
+  // CLEAR filter only, matching the simple code style
+  digitalWrite(SENS_S2, HIGH);
+  digitalWrite(SENS_S3, LOW);
+  delayMicroseconds(400);
+ 
+  freq = readFrequency(100);   // same 100 ms window as code #1
+ 
+  // Health check: no pulses likely means disconnected/faulty
+  if (freq == 0)
+    return false;
+ 
+  return true;
+}
+ 
+// ---------------- SIMPLE TRIP DETECTION -------------
+// Same logic style as code #1: light/frequency band match
+bool isTripFrequency(unsigned int freq)
+{
+  return (freq >= TRIP_MIN && freq <= TRIP_MAX);
+}
+ 
+// ---------------- LED OPERATION ---------------------
+void updateLED(bool fciTrip, bool catchAll)
+{
+  unsigned long now = millis();
+ 
+  // PRIORITY 1: TRIP -> flashing red
+  if (fciTrip)
+  {
+    if (now - previousMillis >= INTERVAL)
+    {
+      previousMillis = now;
+      flashState = !flashState;
+      digitalWrite(RED_LED, flashState);
+    }
+ 
+    digitalWrite(GREEN_LED, LOW);
+    digitalWrite(BLUE_LED, LOW);
+    return;
+  }
+ 
+  // PRIORITY 2: SENSOR COUNT MISMATCH -> flashing yellow
+  if (catchAll)
+  {
+    if (now - previousMillis >= INTERVAL)
+    {
+      previousMillis = now;
+      flashState = !flashState;
+      digitalWrite(RED_LED, flashState);
+      digitalWrite(GREEN_LED, flashState);
+    }
+ 
+    digitalWrite(BLUE_LED, LOW);
+    return;
+  }
+ 
+  // PRIORITY 3: NORMAL -> solid blue
+  digitalWrite(RED_LED, LOW);
+  digitalWrite(GREEN_LED, LOW);
+  digitalWrite(BLUE_LED, HIGH);
+}
+ 
+// ---------------- INITIAL SENSOR SWEEP --------------
+int sensorSweep()
+{
+  int sensCount = 0;
+ 
+  for (int ch = 0; ch < 16; ch++)
+  {
+    unsigned int freq = 0;
+ 
+    powerSensorOn(ch);
+    waitForWarmup();
+ 
+    if (readSensorFrequency(ch, freq))
+    {
+      sensCount++;
+    }
+ 
+    powerSensorOff();
+  }
+ 
+  return sensCount;
+}
+ 
+// ---------------- MAIN LOOP -------------------------
+void loop()
+{
+  int activeSensors = 0;
+ 
+  for (int ch = 0; ch < 16; ch++)
+  {
+    unsigned int freq = 0;
+ 
+    powerSensorOn(ch);
+    waitForWarmup();
+ 
+    if (!readSensorFrequency(ch, freq))
+    {
+      Serial.print("Sensor ");
+      Serial.print(ch);
+      Serial.println(": DISCONNECTED / FAULT");
+      powerSensorOff();
+      continue;
+    }
+ 
+    activeSensors++;
+ 
+    Serial.print("Sensor ");
+    Serial.print(ch);
+    Serial.print("  Frequency Count (100 ms) = ");
+    Serial.print(freq);
+    Serial.print("  --> ");
+ 
+    if (isTripFrequency(freq))
+    {
+      fciTrip = true;
+      Serial.println("TRIPPED");
+ 
+      // Latch until the reading leaves the trip range
+      while (true)
+      {
+        waitForWarmup();
+        readSensorFrequency(ch, freq);
+        updateLED(true, catchAll);
+ 
+        if (!isTripFrequency(freq))
+        {
+          fciTrip = false;
+          break;
+        }
+      }
+    }
+    else
+    {
+      Serial.println("NORMAL");
+    }
+ 
+    powerSensorOff();
+  }
+ 
+  Serial.print("Active Sensors: ");
+  Serial.println(activeSensors);
+ 
+  Serial.print("Expected Sensors: ");
+  Serial.println(connectedSensors);
+ 
+  catchAll = (activeSensors != connectedSensors);
+ 
+  updateLED(fciTrip, catchAll);
+ 
+  Serial.println("------------------");
+  delay(5);
+}
+ 
